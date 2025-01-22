@@ -29,6 +29,8 @@ from collections import deque
 from math import pi
 from time import sleep
 
+dir_table = [['LEFT', 'RIGHT'], ['RIGHT', 'LEFT']] 
+
 class LaserDataInterface(object):
 
     def __init__(self, storage_depth=4, logger=None):
@@ -151,7 +153,7 @@ def min_ignore_None(data):
 
 class NavigateSquare(Node):
     """Simple class designed to navigate a square"""
-
+    
     def __init__(self):
         #This calls the initilization function of the base Node class
         super().__init__('navigate_square')
@@ -174,11 +176,12 @@ class NavigateSquare(Node):
 
         self.new_index = 0
 
-        self.state = 0    # linear -> 1, angular -> 0
+        self.first_run = 0
+
+        self.state = 'START'
         self.ang_vel = pi/4    # pi/2 rad/si
         self.turn_count = 0
-        
-        self.current_ang_vel = 0.0
+        self.current_dir = 'LEFT'
 
         self.laser_range = 1
 
@@ -216,27 +219,33 @@ class NavigateSquare(Node):
         msg = Twist()
         
         self.get_logger().info("-------------" + str(self.d))
+        
+        in_range = self.d > self.min and self.d < self.max
 
-        if self.d < self.min:
-            msg.linear.x = 0.0
-            msg.angular.z = -1*self.ang_vel
-            self.current_ang_vel = msg.angular.z
-            self.state = 2
-            self.new_index = (turn_index + 95) % 380
-        elif self.d > self.max:
+        if not in_range:
+           
+            self.state = 'TURN'
+
             msg.linear.x = 0.0
             msg.angular.z = self.ang_vel
-            self.state = 2
-            self.current_ang_vel = msg.angular.z
-            self.new_index = (turn_index - 95) % 380
+            
+            # 1 if min is on left
+            # 0 if min is on right
+            turn_dir = turn_index > 0 and turn_index < 190
+
+            self.current_dir = dir_table[self.d > self.max][turn_dir]
+
+            self.new_index = (turn_index - 47) % 380 if self.current_dir == 'LEFT' else (turn_index + 47) % 380
+
         else:
+
             msg.linear.x = self.x_vel
             msg.angular.z = 0.0
 
         self.pub_vel.publish(msg)
 
             
-    def control_start(self):
+    def control_start(self, turn_index):
         
         self.get_logger().info("control_start()" + str(self.d))        
 
@@ -246,7 +255,19 @@ class NavigateSquare(Node):
         msg.angular.z = 0.0
 
         if self.d < self.max and self.d > self.min:
-            self.state = 1
+            self.state = 'SQUARE'
+            self.first_run = 1
+
+        if self.d > 0.5 and self.first_run:
+
+            self.state = 'TURN'
+
+            turn_dir = turn_index > 0 and turn_index < 190
+
+            self.current_dir = dir_table[self.d > self.max][turn_dir]
+
+            self.new_index = (turn_index - 95) % 380 if self.current_dir == 'LEFT' else (turn_index + 95) % 380 
+
 
         self.pub_vel.publish(msg)
 
@@ -255,14 +276,14 @@ class NavigateSquare(Node):
         msg = Twist()
         
         msg.linear.x = 0.0
-        msg.angular.z = self.current_ang_vel
-
+        msg.angular.z = self.ang_vel if self.current_dir == 'LEFT' else -self.ang_vel
+        # right neg vel
         minimum = min_ignore_None(lidar)
 
         self.get_logger().info(str(lidar.index(minimum)) + " " + str(self.new_index))
 
-        if lidar.index(minimum) > self.new_index - 10 and lidar.index(minimum) < self.new_index + 10: 
-            self.state = 0
+        if lidar.index(minimum) > self.new_index - 6 and lidar.index(minimum) < self.new_index + 6: 
+            self.state = 'START'
             msg.linear.x = self.x_vel
             msg.angular.z = 0.0
 
@@ -286,21 +307,34 @@ class NavigateSquare(Node):
 
         #self.get_logger().info("state_check()" + str(laser_ranges))
 
-        if self.state == 0:
+        if self.state == 'START':
 
-            self.control_start()
+            self.control_start(index)
 
-        elif self.state == 1:
+        elif self.state == 'SQUARE':
 
             self.control_square(index)
 
-        elif self.state == 2:
+        elif self.state == 'TURN':
 
             self.control_spin(laser_ranges)
 
+    def lidar_test(self):
+
+        laser_ranges = self.ldi.get_range_array(0.0)
+
+        if laser_ranges is None:
+            return
+
+        laser_ranges_min = min_ignore_None(laser_ranges)
+        
+        index = laser_ranges.index(laser_ranges_min)
+
+        self.get_logger().info(str(index))
+
     def timer_callback(self):
         """Timer callback for 10Hz control loop"""
-
+        #self.lidar_test()
         self.state_check() 
     
 
