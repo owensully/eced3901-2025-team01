@@ -148,7 +148,7 @@ class LaserDataInterface(object):
             self.laser_data.popleft()
 
 """
- - noneIsInfinite()
+ - highpassFilter()
     Function used to apply a high-pass filter
     to the lidar data. The 'None' and low distance values
     must be filtered to apply accurate data processing.
@@ -174,8 +174,8 @@ def highpassFilter(value):
 """
 def min_lidar_distance(data):
 
-    return min(data, key = highpassFilter)
-
+    x = min(data, key=highpassFilter)
+    return x
 """
  - NavigateSquare()
     Class used to navigate the square/box obstacle
@@ -186,6 +186,8 @@ class NavigateSquare(Node):
     def __init__(self):
         
         super().__init__('navigate_square')
+
+        self.odom_start = 0.0
 
         """
          - DEFAULT VELOCITY PARAMETERS
@@ -221,7 +223,7 @@ class NavigateSquare(Node):
          - RECOVERY PROTOCOL
         """
         self.recovery = 0
-        self.recovery_d = 0.22
+        self.recovery_d = 0.24
         self.recovery_angle = 45
         
         """
@@ -230,8 +232,6 @@ class NavigateSquare(Node):
         self.end = 0
         self.state = 'START'
         self.current_dir = 'LEFT'
-
-        self.turn_count = 0
 
         self.laser_range = 1
 
@@ -334,9 +334,21 @@ class NavigateSquare(Node):
         msg.linear.x = self.x_vel
         msg.angular.z = 0.0
 
+        # check if box is within range
+        if self.d < self.max and self.d > self.min:
+
+            # toggle state if box is in range
+            self.state = 'SQUARE'
+
+            # enable recovery flag
+            self.recovery = 1
+
         # check if recovery protocol needs to be activated
         if self.d > self.recovery_d and self.recovery or self.d > bot_lost:
-                
+            
+            self.get_logger().info("rec")
+
+
             # toggle state to turn bot
             self.state = 'TURN'
 
@@ -358,7 +370,7 @@ class NavigateSquare(Node):
             # terminate movement
             msg.linear.x = 0.0
             msg.angular.z = 0.0
-
+        """
          # check if box is within range
         if self.d < self.max and self.d > self.min:
 
@@ -367,7 +379,7 @@ class NavigateSquare(Node):
 
             # enable recovery flag
             self.recovery = 1 
-
+        """
         # publish state
         self.pub_vel.publish(msg)
 
@@ -400,6 +412,9 @@ class NavigateSquare(Node):
 
         elif lidar.index(minimum) > self.final_index - 6 and lidar.index(minimum) < self.final_index + 6 and self.final_index:
 
+            self.get_logger().info("toggle final")
+
+
             # toggle state to initiate final sequence
             self.state = 'FINAL'
 
@@ -431,6 +446,9 @@ class NavigateSquare(Node):
 
         # if bot has complete trip and has not been given a final index
         if not self.odom_check() and not self.final_index:
+
+            self.get_logger().info("setting final index")
+
 
             # toggle state to spin
             self.state == 'TURN'
@@ -488,7 +506,7 @@ class NavigateSquare(Node):
 
         # check if end flag is toggled and bot is beyond stop point
         if self.end and self.y_now > self.d_aim:
-
+            self.get_logger().info("odom_check") 
             return False
 
         else:
@@ -502,6 +520,8 @@ class NavigateSquare(Node):
         circled the box.
     """
     def control_final(self):
+
+        msg = Twist()
 
         # check if bot is close to box
         if self.d < self.min:
@@ -525,9 +545,8 @@ class NavigateSquare(Node):
 
     def odom_callback(self, msg):
         """Callback on 'odom' subscription"""
-        #self.get_logger().info('Msg Data: "%s"' % msg)        
-        self.x_now = msg.pose.pose.position.x
-        self.y_now = msg.pose.pose.position.y
+        #self.get_logger().info('Msg Data: "%s"' % msg) 
+        self.y_now = msg.pose.pose.position.y - self.odom_start
 
     def range_callback(self, msg):
         """Callback on 'range' subscription"""
