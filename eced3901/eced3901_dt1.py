@@ -1,24 +1,9 @@
-# Copyright 2016 Open Source Robotics Foundation, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import rclpy
 from rclpy.node import Node
 
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 
-# http://docs.ros.org/en/noetic/api/geometry_msgs/html/index-msg.html
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Twist
 
@@ -29,7 +14,23 @@ from collections import deque
 from math import pi
 from time import sleep
 
+"""
+ - dir_table[][]
+    Direction table used to determine angular direction
+    when the lidar triggers a state change.
+"""
 dir_table = [['LEFT', 'RIGHT'], ['RIGHT', 'LEFT']] 
+
+"""
+ - cutoff_distance
+    Distance used to filter out values below the cutoff,
+    effectively eliminating false readings.
+ - bot_lost
+    Distance used to check if bot has left the box range
+    while in 'START' state.
+"""
+cutoff_distance = 0.128
+bot_lost = 1
 
 class LaserDataInterface(object):
 
@@ -90,6 +91,11 @@ class LaserDataInterface(object):
         data = list(map(lambda x: None if x < self.minrange or x > self.maxrange else x, tempdata))
         
         return data
+        
+        """
+        The following section is omitted, but is kept for documentation. Data is
+        instead returned unprocessed, for precise control over the 380 values in
+        the list.
 
         #self.get_logger().info('Scan Data: "%s"' % str(data))
                 
@@ -124,7 +130,7 @@ class LaserDataInterface(object):
             return lidar_data
         else:
             raise NotImplementedError("Function cannot deal with splitting array (typically 180 / -180)")
-
+        """
 
     def process_laser_msg(self, msg):
         self.anglestep = msg.angle_increment
@@ -141,64 +147,91 @@ class LaserDataInterface(object):
         if len(self.laser_data) > self.depth:
             self.laser_data.popleft()
 
+"""
+ - noneIsInfinite()
+    Function used to apply a high-pass filter
+    to the lidar data. The 'None' and low distance values
+    must be filtered to apply accurate data processing.
+"""
+def highpassFilter(value):
 
-def noneIsInfinite(value):
-    if value is None:
+    if value is None: # filter 'None' values
+
         return float("inf")
-    elif value < 0.128:
+
+    elif value < cutoff_distance: # filter low distance values
+
         return float("inf")
-    else:
+
+    else: # pass-band for all other values
+
         return value
 
-def min_ignore_None(data):
-    x = min(data, key=noneIsInfinite)
-    
-    return x
+"""
+ - min_lidar_distance()
+    Function used to find the minimum value in the lidar array,
+    using the high-pass filter to avoid false readings.
+"""
+def min_lidar_distance(data):
 
+    return min(data, key = highpassFilter)
+
+"""
+ - NavigateSquare()
+    Class used to navigate the square/box obstacle
+    in ECED3901: Lab 1
+"""
 class NavigateSquare(Node):
-    """Simple class designed to navigate a square"""
-    
+        
     def __init__(self):
-        #This calls the initilization function of the base Node class
+        
         super().__init__('navigate_square')
 
-        # We can either create variables here by declaring them
-        # as part of the 'self' class, or we could declare them
-        # earlier as part of the class itself. I find it easier
-        # to declare them here
-
-        # Ensure these are obviously floating point numbers and not
-        # integers (python is loosely typed)
-
-        # WARNING: Check for updates, note this is set and will run backwards
-        #          on the physical model but correctly in simulation.
+        """
+         - DEFAULT VELOCITY PARAMETERS
+        """
         self.x_vel = -0.05
+        self.ang_vel = pi/4
 
+        """
+         - DEFAULT ODOMETER PARAMETERS
+        """
         self.x_now = 0.0
         self.x_init = 0.0
         self.y_now = 0.0
         self.y_init = 0.0
         self.d_now = 0.0
         self.d_aim = -0.14
-
-        self.end = 0
-
         self.d = 0.0
+    
+        """
+         - DEFAULT NAVIGATION PARAMETERS
+        """
         self.min = 0.14
         self.max = 0.2
+        self.angle = 28
 
+        """
+         - LIDAR INDECIES
+        """
         self.new_index = 0
         self.final_index = 0
 
+        """
+         - RECOVERY PROTOCOL
+        """
         self.recovery = 0
         self.recovery_d = 0.22
         self.recovery_angle = 45
-        self.angle = 28
-
+        
+        """
+         - SYSTEM STATES
+        """
+        self.end = 0
         self.state = 'START'
-        self.ang_vel = pi/4    # pi/2 rad/si
-        self.turn_count = 0
         self.current_dir = 'LEFT'
+
+        self.turn_count = 0
 
         self.laser_range = 1
 
@@ -228,129 +261,190 @@ class NavigateSquare(Node):
         )
 
         self.ldi = LaserDataInterface(logger=self.get_logger())
-
+    
+        # 10 Hz timer
         self.timer = self.create_timer(0.1, self.timer_callback)
 
+    """
+     - control_square()
+        Function used while system is in 'SQUARE' state,
+        which directs the bot to navigate the square.
+    """
     def control_square(self, turn_index):
 
         msg = Twist()
         
+        # debug
         self.get_logger().info("-------------" + str(self.d))
         
+        # determine if bot is still in box range
         in_range = self.d > self.min and self.d < self.max
 
-        if not in_range:
-           
+        if in_range:
+
+            # determine if bot has travelled away from starting point
+            if abs(self.y_now) > 5 * self.d_aim:
+
+                self.end = 1
+
+            # drive straight
+            msg.linear.x = self.x_vel
+            msg.angular.z = 0.0
+
+        else:
+            
+            # toggle state if bot left range
             self.state = 'TURN'
 
+            # termiante movement
             msg.linear.x = 0.0
             msg.angular.z = 0.0
             
             # 1 if min is on left
             # 0 if min is on right
+            # determine turn direction using minimum lidar distance index
             turn_dir = turn_index > 0 and turn_index < 190
 
+            # use direction table to determine direction
             self.current_dir = dir_table[self.d > self.max][turn_dir]
 
-            self.angle = 45 if self.d < self.min else 25
+            # high turn angle if bot is close to box, otherwise low turn angle
+            self.angle = 45 if self.d < self.min else 28
 
+            # determine turn radius using angle
             self.new_index = (turn_index - self.angle) % 380 if self.current_dir == 'LEFT' else (turn_index + self.angle) % 380
 
-        else:
-
-            if self.y_now < 5 * self.d_aim:
-
-                self.end = 1
-
-            msg.linear.x = self.x_vel
-            msg.angular.z = 0.0
-
+        # publish state
         self.pub_vel.publish(msg)
-
-            
+     
+    """
+     - control_start()
+        Function used while system is in 'START' state,
+        which directs the bot to drive straight until
+        box is in close range.
+    """
     def control_start(self, turn_index):
         
+        # debug
         self.get_logger().info("control_start()" + str(self.d))        
 
         msg = Twist()
-
+        
+        # drive straight
         msg.linear.x = self.x_vel
         msg.angular.z = 0.0
 
-        if self.d < self.max and self.d > self.min:
-            self.state = 'SQUARE'
-            self.recovery = 1
-
-        if self.d > self.recovery_d and self.recovery:
-
+        # check if recovery protocol needs to be activated
+        if self.d > self.recovery_d and self.recovery or self.d > bot_lost:
+                
+            # toggle state to turn bot
             self.state = 'TURN'
 
+            # determine turn direction using minimum lidar distance index
             turn_dir = turn_index > 0 and turn_index < 190
 
+            # use direction table to determine direction
             self.current_dir = dir_table[self.d > self.max][turn_dir]
 
+            # high turn angle if bot is in recovery mode, otherwise bot is lost and needs to return to box
+            self.recovery_angle = 45 if self.d < bot_lost else 0
+            
+            # determine turn radius using angle
             self.new_index = (turn_index - self.recovery_angle) % 380 if self.current_dir == 'LEFT' else (turn_index + self.recovery_angle) % 380 
 
+            # toggle recovery flag
             self.recovery = 0
 
+            # terminate movement
             msg.linear.x = 0.0
             msg.angular.z = 0.0
 
+         # check if box is within range
+        if self.d < self.max and self.d > self.min:
+
+            # toggle state if box is in range
+            self.state = 'SQUARE'
+
+            # enable recovery flag
+            self.recovery = 1 
+
+        # publish state
         self.pub_vel.publish(msg)
 
+    """
+     - control_spin()
+        Function used while system is in 'TURN' state,
+        which directs the bot to spin until desired angle
+        has been reached.
+    """
     def control_spin(self, lidar):
         
         msg = Twist()
         
+        # spin
         msg.linear.x = 0.0
         msg.angular.z = self.ang_vel if self.current_dir == 'LEFT' else -self.ang_vel
         # right neg vel
-        minimum = min_ignore_None(lidar)
-        if minimum == 0:
-            return
 
+        # determine minimum lidar distance
+        minimum = min_lidar_distance(lidar)
+
+        # debug
         self.get_logger().info(str(lidar.index(minimum)) + " " + str(self.new_index))
 
+        # if the but is facing the desired index, the turn is complete
         if lidar.index(minimum) > self.new_index - 6 and lidar.index(minimum) < self.new_index + 6: 
         
-            if self.final_index:
-                self.state = 'FINAL'
-            else:
-                self.state = 'START'
+            # toggle state to drive straight
+            self.state = 'START'
 
+        elif lidar.index(minimum) > self.final_index - 6 and lidar.index(minimum) < self.final_index + 6 and self.final_index:
+
+            # toggle state to initiate final sequence
+            self.state = 'FINAL'
+
+            # drive straight
             msg.linear.x = self.x_vel
             msg.angular.z = 0.0
 
+        # publish state
         self.pub_vel.publish(msg)
 
+    """
+     - state_check()
+        Function used to check system state and direct the bot
+        accordingly.
+    """
     def state_check(self):
 
+        # pull lidar array
         laser_ranges = self.ldi.get_range_array(0.0)
 
-        if laser_ranges is None:
-            return
-
-        laser_ranges_min = min_ignore_None(laser_ranges)
-        if laser_ranges_min == 0:
-            return
-
+        # determine minimum lidar distance
+        laser_ranges_min = min_lidar_distance(laser_ranges)
+        
+        # assign minimum lidar distance to current distance
         self.d = laser_ranges_min
 
+        # find index of minimum distance
         index = laser_ranges.index(self.d)
 
-        if self.d is None:
-            return
-
+        # if bot has complete trip and has not been given a final index
         if not self.odom_check() and not self.final_index:
+
+            # toggle state to spin
             self.state == 'TURN'
+
+            # set final index as closest location
             self.final_index = index
 
+            # determine turn direction
             turn_dir = index > 0 and index < 190
-
+            
+            # set currect direction
             self.current_dir = 'LEFT' if turn_dir else 'RIGHT'
 
-        #self.get_logger().info("state_check()" + str(laser_ranges))
-
+        # initiate process based on state
         if self.state == 'START':
             
             self.control_start(index)
@@ -367,6 +461,11 @@ class NavigateSquare(Node):
 
             self.control_final()
 
+    """
+     - lidar_test()
+        Inactive function used to test the lidar abilities of
+        the bot.
+    """
     def lidar_test(self):
 
         laser_ranges = self.ldi.get_range_array(0.0)
@@ -380,32 +479,41 @@ class NavigateSquare(Node):
 
         self.get_logger().info(str(index))
 
+    """
+     - odom_check()
+        Function used to determine if bot has complete trip around
+        box.
+    """
     def odom_check(self):
 
+        # check if end flag is toggled and bot is beyond stop point
         if self.end and self.y_now > self.d_aim:
+
             return False
 
-        if self.state == 'TURN':
+        else:
+
             return True
 
-        self.get_logger().info("x = " + str(self.x_now) + "y = " + str(self.y_now) + "d now = " + str(self.d_now))
-
-        d = pow( pow(self.x_now - self.x_init, 2) + pow(self.y_now - self.y_init, 2), 0.5 )
-
-        x = abs(self.d_now - d)
-
-        self.d_now = d
-
-        return True
-
+    """
+     - control_final()
+        Function used while system is in 'FINAL' state,
+        which terminates the process when the bot has
+        circled the box.
+    """
     def control_final(self):
 
-        self.get_logger().info("iiafhqdbvbweuvb")
-
+        # check if bot is close to box
         if self.d < self.min:
+
+            # terminate movement
             msg.linear.x = 0.0
             msg.angular.z = 0.0
+
+            # publish state
             self.pub_vel.publish(msg)
+
+            # end process
             exit(0)
 
     def timer_callback(self):
