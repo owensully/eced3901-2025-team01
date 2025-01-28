@@ -155,15 +155,21 @@ class LaserDataInterface(object):
 """
 def highpassFilter(value):
 
-    if value is None: # filter 'None' values
+    if value < cutoff_distance: # filter low distance values
 
-        return float("inf")
-
-    elif value < cutoff_distance: # filter low distance values
-
-        return float("inf")
+        return 0
 
     else: # pass-band for all other values
+
+        return value
+
+def NoneFilter(value):
+
+    if value is None:
+
+        return 0
+
+    else:
 
         return value
 
@@ -174,7 +180,11 @@ def highpassFilter(value):
 """
 def min_lidar_distance(data):
 
-    x = min(data, key=highpassFilter)
+    data_remove_none = [x for x in data if NoneFilter(x)]
+
+    data_highpass = [x for x in data_remove_none if highpassFilter(x)]
+
+    x = min(data_highpass)
     return x
 """
  - NavigateSquare()
@@ -188,6 +198,7 @@ class NavigateSquare(Node):
         super().__init__('navigate_square')
 
         self.odom_start = 0.0
+        self.odom_flag = 0
 
         """
          - DEFAULT VELOCITY PARAMETERS
@@ -209,7 +220,7 @@ class NavigateSquare(Node):
         """
          - DEFAULT NAVIGATION PARAMETERS
         """
-        self.min = 0.14
+        self.min = 0.15
         self.max = 0.2
         self.angle = 28
 
@@ -283,7 +294,7 @@ class NavigateSquare(Node):
         if in_range:
 
             # determine if bot has travelled away from starting point
-            if abs(self.y_now) > 5 * self.d_aim:
+            if self.y_now < 5 * self.d_aim:
 
                 self.end = 1
 
@@ -309,7 +320,7 @@ class NavigateSquare(Node):
             self.current_dir = dir_table[self.d > self.max][turn_dir]
 
             # high turn angle if bot is close to box, otherwise low turn angle
-            self.angle = 45 if self.d < self.min else 28
+            self.angle = 55 if self.d < self.min else 28
 
             # determine turn radius using angle
             self.new_index = (turn_index - self.angle) % 380 if self.current_dir == 'LEFT' else (turn_index + self.angle) % 380
@@ -397,6 +408,9 @@ class NavigateSquare(Node):
         msg.linear.x = 0.0
         msg.angular.z = self.ang_vel if self.current_dir == 'LEFT' else -self.ang_vel
         # right neg vel
+        
+        if lidar is None:
+            return
 
         # determine minimum lidar distance
         minimum = min_lidar_distance(lidar)
@@ -405,15 +419,9 @@ class NavigateSquare(Node):
         self.get_logger().info(str(lidar.index(minimum)) + " " + str(self.new_index))
 
         # if the but is facing the desired index, the turn is complete
-        if lidar.index(minimum) > self.new_index - 6 and lidar.index(minimum) < self.new_index + 6: 
-        
-            # toggle state to drive straight
-            self.state = 'START'
-
-        elif lidar.index(minimum) > self.final_index - 6 and lidar.index(minimum) < self.final_index + 6 and self.final_index:
-
+        #if lidar.index(minimum) > self.final_index - 6 and lidar.index(minimum) < self.final_index + 6 and self.final_index:
+        if lidar.index(minimum) > -6 and lidar.index(minimum) < 6 and self.final_index:
             self.get_logger().info("toggle final")
-
 
             # toggle state to initiate final sequence
             self.state = 'FINAL'
@@ -421,6 +429,11 @@ class NavigateSquare(Node):
             # drive straight
             msg.linear.x = self.x_vel
             msg.angular.z = 0.0
+
+        elif lidar.index(minimum) > self.new_index - 6 and lidar.index(minimum) < self.new_index + 6 and not self.final_index:
+
+            # toggle state to drive straight
+            self.state = 'START'
 
         # publish state
         self.pub_vel.publish(msg)
@@ -432,8 +445,13 @@ class NavigateSquare(Node):
     """
     def state_check(self):
 
+        self.get_logger().info("Y VALUE: " + str(self.y_now))
+
         # pull lidar array
         laser_ranges = self.ldi.get_range_array(0.0)
+
+        if laser_ranges is None:
+            return
 
         # determine minimum lidar distance
         laser_ranges_min = min_lidar_distance(laser_ranges)
@@ -447,14 +465,16 @@ class NavigateSquare(Node):
         # if bot has complete trip and has not been given a final index
         if not self.odom_check() and not self.final_index:
 
-            self.get_logger().info("setting final index")
+            self.final_index = index
+            self.get_logger().info("setting" + str(self.final_index))
 
-
+            self.new_index = 1000
+            laser_ranges = None
             # toggle state to spin
-            self.state == 'TURN'
+            self.state = 'TURN'
 
             # set final index as closest location
-            self.final_index = index
+            #self.final_index = index
 
             # determine turn direction
             turn_dir = index > 0 and index < 190
@@ -521,6 +541,8 @@ class NavigateSquare(Node):
     """
     def control_final(self):
 
+        self.get_logger().info("yippeeeeeeeeee")
+
         msg = Twist()
 
         # check if bot is close to box
@@ -545,8 +567,12 @@ class NavigateSquare(Node):
 
     def odom_callback(self, msg):
         """Callback on 'odom' subscription"""
-        #self.get_logger().info('Msg Data: "%s"' % msg) 
-        self.y_now = msg.pose.pose.position.y - self.odom_start
+
+        if not self.odom_flag:
+            self.odom_start = msg.pose.pose.position.y
+            self.odom_flag = 1
+ 
+        self.y_now = msg.pose.pose.position.y# - self.odom_start
 
     def range_callback(self, msg):
         """Callback on 'range' subscription"""
