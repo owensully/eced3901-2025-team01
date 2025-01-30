@@ -1,3 +1,18 @@
+"""
+ - eced3901_dt1.py
+    script that dynamically directs a lidar-equipped Ros2
+    robot around a box. the decision-making algorithm
+    is able to lock onto a subject, and drive around it
+    indefinitely without touching or leaving the subject.
+    for the sake of the first laboratory demo, the odometer
+    is used to initiate the final sequence.
+ - NOTE: this script adopts the callback, lidar and odometer
+    subscription, and main functions provided in ECED3901.
+    detailed comments are not included for these aspects. all
+    team-made code is thoroughly commented.
+ - Owen Sullivan, Andrew Van Harmelen, Jasmin Simpson, Jamin Fubler, Camrin Carmichael
+"""
+
 import rclpy
 from rclpy.node import Node
 
@@ -150,7 +165,7 @@ class LaserDataInterface(object):
 """
  - highpassFilter()
     Function used to apply a high-pass filter
-    to the lidar data. The 'None' and low distance values
+    to the lidar data. The low distance values
     must be filtered to apply accurate data processing.
 """
 def highpassFilter(value):
@@ -163,13 +178,21 @@ def highpassFilter(value):
 
         return value
 
+"""
+ - NoneFilter()
+    Function used to apply a 'None' filter
+    to the lidar data. The 'None' values would
+    impact the minimum algorithm, so these
+    need to be remvoed for accurate data
+    processing.
+"""
 def NoneFilter(value):
 
-    if value is None:
+    if value is None: # filter None values
 
         return 0
 
-    else:
+    else: # pass-band for all other values
 
         return value
 
@@ -180,12 +203,14 @@ def NoneFilter(value):
 """
 def min_lidar_distance(data):
 
-    data_remove_none = [x for x in data if NoneFilter(x)]
+    data_remove_none = [x for x in data if NoneFilter(x)] # None filter
 
-    data_highpass = [x for x in data_remove_none if highpassFilter(x)]
+    data_highpass = [x for x in data_remove_none if highpassFilter(x)] # high-pass filter
 
     x = min(data_highpass)
+
     return x
+
 """
  - NavigateSquare()
     Class used to navigate the square/box obstacle
@@ -381,16 +406,7 @@ class NavigateSquare(Node):
             # terminate movement
             msg.linear.x = 0.0
             msg.angular.z = 0.0
-        """
-         # check if box is within range
-        if self.d < self.max and self.d > self.min:
 
-            # toggle state if box is in range
-            self.state = 'SQUARE'
-
-            # enable recovery flag
-            self.recovery = 1 
-        """
         # publish state
         self.pub_vel.publish(msg)
 
@@ -500,6 +516,7 @@ class NavigateSquare(Node):
             self.control_final()
 
     """
+        LEGACY, does not work
      - lidar_test()
         Inactive function used to test the lidar abilities of
         the bot.
