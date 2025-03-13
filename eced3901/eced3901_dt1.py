@@ -158,8 +158,15 @@ class NavigateCourse(Node):
         self.cell = start_cell
 
         self.attribute_check_complete = 0
+        
+        self.has_init = 0
 
         self.lidar_tolerance = 0.1
+
+        self.old_dir = 0
+        self.new_dir = 0
+
+        self.velocity = [0.0, 0.0]
 
         # Subscribe to odometry
         self.sub_odom = self.create_subscription(
@@ -189,12 +196,19 @@ class NavigateCourse(Node):
         self.ldi = LaserDataInterface(logger=self.get_logger())
     
         # 10 Hz timer 0.1
-        self.timer = self.create_timer(2, self.timer_callback)
+        self.timer = self.create_timer(0.1, self.timer_callback)
 
     def timer_callback(self):
         """Timer callback for 10Hz control loop"""
-        self.test()
-        #self.primaryProcess()
+        #self.test()
+
+        #return
+
+        if not self.has_init:
+
+            self.init()
+
+        self.primaryProcess()
         #self.lidar_test() 
 
     def odom_callback(self, msg):
@@ -222,9 +236,25 @@ class NavigateCourse(Node):
         self.pub_vel.publish(msg)
         super().destroy_node()
 
+    def setVel(self, v):
+
+        vel = Twist()
+
+        vel.linear.x = v[0]
+        vel.angular.z = v[1]
+
+        self.pub_vel.publish(vel)
+
+
     def test(self):
 
-        print(directions)
+        print(direction_map, course_map)
+
+    def init(self):
+
+        self.setVel(decode_direction_map[0])
+
+        self.has_init = 1
 
     """
      - lidar_test()
@@ -244,20 +274,119 @@ class NavigateCourse(Node):
 
         self.get_logger().info(str(lr2))
 
+        return lr2
+
+
+    """
+     - checkLidar()
+        function used to compare two lidar array
+        within a set tolerance.
+    """
+    def checkLidar(self, lidar1, lidar2): 
+
+        for l1, l2 in zip(lidar1, lidar2):
+        
+            if l1 is None or l2 is None:
+
+                return False
+
+            if abs(l1 - l2) > self.lidar_tolerance:
+
+                return False
+
+        return True
+
+
+
     """
      - pullLidar()
         function used to select and return values from
         lidar range array.
     """
-    def pullLidar(self, *args):
+    def pullLidar(self, args):
+
+        for arg in args:
+
+            if arg is None:
+
+                return
+
+        print(args)
 
         # read 380 lidar values
         laser_ranges = self.ldi.get_range_array(0.0)
+
+        if laser_ranges is None:
+
+            return
 
         # select pull values from range array
         pull_values = [laser_ranges[arg] for arg in args if 0 <= arg < 380]
         
         return pull_values
+   
+    """
+     - checkNN()
+        function used to determine the next cell location
+        by comparing current lidar values to the lidar
+        values stored in the nearest neighbours.
+    """
+    def checkNN(self, cell, directions):
+
+        # loop through provided directions
+        for direction in directions:
+
+            # find the neighbour in each direction
+            new_cell = list(map(lambda i, j: i + j, cell, direction))
+
+            # query the lidar values for the new cell
+            new_cell_lidar = [course_map[map_layers.index(d)][new_cell[0]][new_cell[1]] for d in NWSE]
+
+            n = course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]]
+
+            d = (n - self.old_dir + 8) % 8
+
+            # determine the current lidar values
+            lidar = self.pullLidar(cell_directions(angles[d]))
+
+            # ensure proper values were returned
+            if lidar is None:
+
+                return
+
+            print(lidar, new_cell_lidar)
+            # determine if current lidar values match map lidar values
+            if self.checkLidar(lidar, new_cell_lidar):
+
+                # update current cell
+                return new_cell
+
+        return False
+
+
+
+    """
+     - checkSpin()
+        function used to check if the bot should still
+        be spinning by comparing current lidar values
+        to cell lidar values.
+    """
+    def checkSpin(self):
+        
+        # pull the NWSE current lidar values
+        current_lidar = self.pullLidar(cell_directions(0))
+
+        # read map to find cell lidar values
+        cell_lidar = [course_map[map_layers.index(d)][self.cell[0]][self.cell[1]] for d in NWSE]
+
+        # compare these values
+        if self.checkLidar(current_lidar, cell_lidar):
+
+            self.velocity = decode_direction_map[0]
+
+            # start driving straight
+            self.setVel(self.velocity)
+
     """
      - primaryProcess()
         function repeated by the timer callback
@@ -265,27 +394,46 @@ class NavigateCourse(Node):
         robot.
     """
     def primaryProcess(self):
+   
+        print(self.cell)
+
+        # check if bot is spinning
+        if self.velocity[1]:
+            
+            # check if bot should still be spinning
+            self.checkSpin()
+
+            return
 
         # determine if the attributes have been checked
         if not self.attribute_check_complete:
 
             checkCell(self.cell)
-
-        # ensure proper values were returned
-        if not NWSE_lidar:
-
-            return
+             
+            # toggle attribute check flag
+            self.attribute_check_complete = 1
 
         # compare current NWSE lidar values with neighbour lidar values
-        new_cell = checkNN(self.cell, nearest_neighbour)
+        new_cell = self.checkNN(self.cell, nearest_neighbour)
 
         # if new cell is found, update current cell
         if new_cell:
 
-            self.cell = new_cell
-
+            # reset attribute flag
             self.attribute_check_complete = 0
 
+            # update current cell
+            self.cell = new_cell
+
+            # update the new and old directions
+            self.old_dir = self.new_dir
+            self.new_dir = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]] 
+
+            # use directions to determine new speed
+            self.velocity = decode_direction_map[direction_map[int(self.new_dir)][int(self.old_dir)]]
+
+            # set wheel velocity
+            self.setVel(self.velocity)
 
 """
  ========== FINAL FUNCTION DEFINITIONS ==========
@@ -297,12 +445,14 @@ class NavigateCourse(Node):
     layers in the 'layers' file.
 """
 def read_map():
-    
+
     with open(map_directory + "/layers", "r") as file:
 
         map_layers = file.read().split()
 
-    return np.array([np.loadtxt(map_directory + filename) for filename in map_layers]), map_layers
+    map_data = [[list(map(float, line.split())) for line in open(map_directory + filename)] for filename in map_layers]
+
+    return map_data, map_layers
 
 """
  - read_directions()
@@ -313,55 +463,7 @@ def read_directions():
 
     with open(current_directory + "/dir_table", "r") as file:
 
-        return np.array(np.loadtxt(file))
-
-"""
- - checkLidar()
-    function used to compare two lidar array
-    within a set tolerance.
-"""
-def checkLidar(lidar1, lidar2): 
-
-    for l1, l2 in zip(lidar1, lidar2):
-        
-        if l1 is None or l2 is None:
-
-            return False
-
-        if abs(l1 - l2) > self.lidar_tolerance:
-
-            return False
-
-    return True
-
-
-"""
- - checkNN()
-    function used to determine the next cell location
-    by comparing current lidar values to the lidar
-    values stored in the nearest neighbours.
-"""
-def checkNN(cell, directions):
-
-    # loop through provided directions
-    for direction in directions:
-
-        # determine the current lidar values
-        lidar = self.pullLidar(cell_directions(angles(course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]])))
-
-        # find the neighbour in each direction
-        new_cell = list(map(lambda i, j: i + j, cell, direction))
-            
-        # query the lidar values for the new cell
-        new_cell_lidar = [course_map[map_layers.index(d)][new_cell[0]][new_cell[1]] for d in NWSE]
-
-        # determine if current lidar values match map lidar values
-        if checkLidar(lidar, new_cell_lidar):
-
-            # update current cell
-            return new_cell
-
-    return False
+        return [list(map(int, line.split())) for line in file]
 
 """
  - cell_directions()
@@ -370,7 +472,18 @@ def checkNN(cell, directions):
 """
 def cell_directions(d):
 
-    return (A["NORTH"] + d) % 380, (A["WEST"] + d) % 380, (A["SOUTH"] + d) % 380, (A["EAST"] + d) % 380
+    n, w, s, e = (A["NORTH"] + d) % 380, (A["WEST"] + d) % 380, (A["SOUTH"] + d) % 380, (A["EAST"] + d) % 380
+
+    if n == 0:
+        n = n + 1
+    if w == 0:
+        w = w + 1
+    if s == 0:
+        s = s + 1
+    if e == 0:
+        e = e + 1
+
+    return n, w, s, e
 
 """
  - checkCell()
@@ -390,9 +503,6 @@ def checkCell(cell):
 
                 # call corresponding subprocess
                 subProcess[attribute_priority.index(attribute)]()
-    
-    # toggle attribute check flag
-    self.attribute_check_complete = 1
 
 #subProcess = [lootProcess, magnetProcess, rfidProcess, qrProcess, safeProcess, indianaProcess, cageProcess]
 
@@ -462,7 +572,7 @@ def cageProcess():
 """
 
 spin_velocity = 0.5
-
+forward_velocity = -0.05
 start_cell = [8, 9]
 
 """
@@ -485,6 +595,7 @@ pic_dst = "/home/student/ros2_ws/src/eced3901/eced3901/pictures/"
  with 380 element LIDAR array.
 """
 angles = {
+    -1: 1,
     0: 1,
     1: 47,
     2: 95,
@@ -544,7 +655,7 @@ D = {
     "SOUTH": 4,
     "SOUTH-EAST": 5,
     "EAST": 6,
-    "NORTH-EAST", 7
+    "NORTH-EAST": 7
 }
 
 """
