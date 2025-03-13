@@ -17,6 +17,8 @@ from time import sleep
 import numpy as np
 import os
 
+import cv2
+
 """
  ========== DEMO CLASS DEFINITIONS ==========
 """
@@ -157,7 +159,7 @@ class NavigateCourse(Node):
 
         self.attribute_check_complete = 0
 
-        self.lidar_tolerance = 0.02
+        self.lidar_tolerance = 0.1
 
         # Subscribe to odometry
         self.sub_odom = self.create_subscription(
@@ -191,9 +193,9 @@ class NavigateCourse(Node):
 
     def timer_callback(self):
         """Timer callback for 10Hz control loop"""
-
-        self.primaryProcess()
-        self.lidar_test() 
+        self.test()
+        #self.primaryProcess()
+        #self.lidar_test() 
 
     def odom_callback(self, msg):
         """Callback on 'odom' subscription"""
@@ -219,6 +221,10 @@ class NavigateCourse(Node):
         msg = Twist()
         self.pub_vel.publish(msg)
         super().destroy_node()
+
+    def test(self):
+
+        print(directions)
 
     """
      - lidar_test()
@@ -265,17 +271,15 @@ class NavigateCourse(Node):
 
             checkCell(self.cell)
 
-        # determine the current NWSE lidar values
-        NWSE_lidar = self.pullLidar(D["NORTH"], D["WEST"], D["SOUTH"], D["EAST"])
-
         # ensure proper values were returned
         if not NWSE_lidar:
 
             return
 
         # compare current NWSE lidar values with neighbour lidar values
-        new_cell = checkNN(self.cell, NWSE_lidar, nearest_neighbour)
+        new_cell = checkNN(self.cell, nearest_neighbour)
 
+        # if new cell is found, update current cell
         if new_cell:
 
             self.cell = new_cell
@@ -299,6 +303,17 @@ def read_map():
         map_layers = file.read().split()
 
     return np.array([np.loadtxt(map_directory + filename) for filename in map_layers]), map_layers
+
+"""
+ - read_directions()
+    function used to load the direction table file
+    into a 2D array.
+"""
+def read_directions():
+
+    with open(current_directory + "/dir_table", "r") as file:
+
+        return np.array(np.loadtxt(file))
 
 """
  - checkLidar()
@@ -326,10 +341,13 @@ def checkLidar(lidar1, lidar2):
     by comparing current lidar values to the lidar
     values stored in the nearest neighbours.
 """
-def checkNN(cell, lidar, directions):
+def checkNN(cell, directions):
 
     # loop through provided directions
     for direction in directions:
+
+        # determine the current lidar values
+        lidar = self.pullLidar(cell_directions(angles(course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]])))
 
         # find the neighbour in each direction
         new_cell = list(map(lambda i, j: i + j, cell, direction))
@@ -346,23 +364,37 @@ def checkNN(cell, lidar, directions):
     return False
 
 """
+ - cell_directions()
+    function used to convert NWSE to align with a given
+    cell direction.
+"""
+def cell_directions(d):
+
+    return (A["NORTH"] + d) % 380, (A["WEST"] + d) % 380, (A["SOUTH"] + d) % 380, (A["EAST"] + d) % 380
+
+"""
  - checkCell()
     function used to check the cell attributes
     at given coordinates.
 """
 def checkCell(cell):
 
+    # all possible attributes
     for attribute in attribute_priority:
 
+        # if attribute exists in current map
         if attribute in map_layers:
 
+            # if this cell has this attribute
             if course_map[map_layers.index(attribute)][cell[0]][cell[1]]:
 
+                # call corresponding subprocess
                 subProcess[attribute_priority.index(attribute)]()
     
+    # toggle attribute check flag
     self.attribute_check_complete = 1
 
-subProcess = [lootProcess, magnetProcess, rfidProcess, qrProcess, safeProcess, indianaProcess, cageProcess]
+#subProcess = [lootProcess, magnetProcess, rfidProcess, qrProcess, safeProcess, indianaProcess, cageProcess]
 
 def lootProcess():
 
@@ -377,8 +409,41 @@ def rfidProcess():
     pass
 
 def qrProcess():
+ 
+    # open camera
+    cam = cv2.VideoCapture(0)
+    
+    # 1280 x 720
+    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    pass
+    cv2.waitKey(1000)
+
+    # take picture
+    ret, pic = cam.read()
+
+    if ret:
+
+        # determine destination path
+        dst = pic_dst + "qr.jpg"
+
+        # save picture at destination
+        cv2.imwrite(dst, pic)
+        
+    # close camera
+    cam.release()
+
+    # read picture
+    qr_pic = cv2.imread(dst)
+
+    # initialize QR detector
+    qr_detector = cv2.QRCodeDetector()
+    
+    # decode QR
+    qr_data, bbox, _ = qr_detector.detectAndDecode(qr_pic)
+
+    # place holder print, this is where the qr data is passed through serial
+    print(qr_data)
 
 def safeProcess():
 
@@ -396,6 +461,10 @@ def cageProcess():
  ========== FINAL GLOBAL VARIABLES ==========
 """
 
+spin_velocity = 0.5
+
+start_cell = [8, 9]
+
 """
  read map from sub-directory.
  map/ must sit parallel to eced3901_dt1.py.
@@ -409,31 +478,79 @@ map_directory = current_directory + "/map/"
 
 course_map, map_layers = read_map()
 
+pic_dst = "/home/student/ros2_ws/src/eced3901/eced3901/pictures/"
+
 """
- enum to align cardinal directions
+ enum to align directions
  with 380 element LIDAR array.
 """
-D = {
-    "NORTH": 1,
-    "NORTH-WEST": 47,
-    "WEST": 95,
-    "SOUTH-WEST": 142,
-    "SOUTH": 190,
-    "SOUTH-EAST": 237,
-    "EAST": 285,
-    "NORTH-EAST": 332
+angles = {
+    0: 1,
+    1: 47,
+    2: 95,
+    3: 142,
+    4: 190,
+    5: 237,
+    6: 285,
+    7: 332
 }
-#NWSE = [ "NORTH", "WEST", "SOUTH", "EAST" ]
+
+"""
+ enum to correspond the cardinal
+ directions to the 380 element LIDAR
+ array.
+"""
+A = {
+    "NORTH": 1,
+    "WEST": 95,
+    "SOUTH": 190,
+    "EAST": 285
+}
+
+"""
+ list of NWSE file names.
+"""
 NWSE = [ "north", "west", "south", "east" ]
 
 """
- direction tables to check surrounding cells
+ direction tables to check surrounding cells.
 """
 nearest_neighbour = [ [0, -1], [-1, 0], [0, 1], [1, 0] ]
 next_nearest_neighbour = [ [-1, -1], [1, -1], [1, 1], [-1, 1] ]
 
-start_cell = [8, 9]
+"""
+ read dir_table from working directory.
+"""
+direction_map = read_directions()
 
+"""
+ corresponding velocity values for a
+ given direction.
+"""
+decode_direction_map = {
+    0: [forward_velocity, 0.0],
+    1: [0.0, -spin_velocity],
+    2: [0.0, spin_velocity]
+}
+
+# decode_direction_map[direction_map[self.old_dir][self.new_dir]]
+
+D = {
+    "N/A": -1,
+    "NORTH": 0,
+    "NORTH-WEST": 1,
+    "WEST": 2,
+    "SOUTH-WEST": 3,
+    "SOUTH": 4,
+    "SOUTH-EAST": 5,
+    "EAST": 6,
+    "NORTH-EAST", 7
+}
+
+"""
+ list of possible file names that form the map,
+ logged in their respective priority.
+"""
 attribute_priority = [ "loot", "magnet", "rfid", "qr", "safe", "indiana", "cage"]
 
 """
