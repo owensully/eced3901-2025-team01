@@ -16,7 +16,7 @@ from time import sleep
 
 import numpy as np
 import os
-
+import sys
 import cv2
 
 """
@@ -155,18 +155,34 @@ class NavigateCourse(Node):
         
         super().__init__('navigate_course')
 
+        self.subProcess = [self.lootProcess, self.magnetProcess, self.rfidProcess, self.qrProcess, self.safeProcess, self.indianaProcess, self.cageProcess, self.sleepProcess]
+     
         self.cell = start_cell
 
         self.attribute_check_complete = 0
         
         self.has_init = 0
 
-        self.lidar_tolerance = 0.1
+        self.tolerance = 0.10
 
         self.old_dir = 0
         self.new_dir = 0
 
         self.velocity = [0.0, 0.0]
+
+        self.sub = 0
+        self.subprocess = 'no'
+
+        self.c_yaw = 0
+        self.t_yaw = 0
+
+        self.ox = 0
+        self.oy = 0
+        self.oz = 0
+        self.ow = 0
+
+        self.y = 0
+        self_x = 0
 
         # Subscribe to odometry
         self.sub_odom = self.create_subscription(
@@ -200,21 +216,33 @@ class NavigateCourse(Node):
 
     def timer_callback(self):
         """Timer callback for 10Hz control loop"""
-        #self.test()
+        self.test()
 
-        #return
-
+        return
+        
         if not self.has_init:
 
             self.init()
 
+        
         self.primaryProcess()
         #self.lidar_test() 
+        
 
     def odom_callback(self, msg):
         """Callback on 'odom' subscription"""
  
-        self.y_now = msg.pose.pose.position.y# - self.odom_start
+        self.y = msg.pose.pose.position.y# - self.odom_start
+        self.x = msg.pose.pose.position.x
+
+        self.ox = msg.pose.pose.orientation.x
+        self.oy = msg.pose.pose.orientation.y
+        self.oz = msg.pose.pose.orientation.z
+        self.ow = msg.pose.pose.orientation.w 
+
+        a = 2 * (self.ow * self.oz + self.ox * self.oy)
+        b = 1 - 2 * (self.oy * self.oy + self.oz * self.oz)
+        self.c_yaw = np.arctan2(a, b)
 
     def range_callback(self, msg):
         """Callback on 'range' subscription"""
@@ -248,9 +276,11 @@ class NavigateCourse(Node):
 
     def test(self):
 
-        print(direction_map, course_map)
+        print(self.pullLidar(cell_directions(0)))
 
     def init(self):
+
+        print(self.cell)
 
         self.setVel(decode_direction_map[0])
 
@@ -282,19 +312,25 @@ class NavigateCourse(Node):
         function used to compare two lidar array
         within a set tolerance.
     """
-    def checkLidar(self, lidar1, lidar2): 
+    def checkLidar(self, lidar1, lidar2, t): 
+
+        x = 4
 
         for l1, l2 in zip(lidar1, lidar2):
         
             if l1 is None or l2 is None:
 
-                return False
+                x = x - 1
 
-            if abs(l1 - l2) > self.lidar_tolerance:
+                continue
+                            
+            if abs(l1 - l2) > t:
 
-                return False
+                x = x - 1
+        
+        if x >= 3:
 
-        return True
+            return True
 
 
 
@@ -310,8 +346,6 @@ class NavigateCourse(Node):
             if arg is None:
 
                 return
-
-        print(args)
 
         # read 380 lidar values
         laser_ranges = self.ldi.get_range_array(0.0)
@@ -335,31 +369,39 @@ class NavigateCourse(Node):
 
         # loop through provided directions
         for direction in directions:
-
+            
             # find the neighbour in each direction
             new_cell = list(map(lambda i, j: i + j, cell, direction))
 
-            # query the lidar values for the new cell
-            new_cell_lidar = [course_map[map_layers.index(d)][new_cell[0]][new_cell[1]] for d in NWSE]
+            try:
+                
+                index = blacklist.index(new_cell)
+            
+            except:
 
-            n = course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]]
+                # query the lidar values for the new cell
+                new_cell_lidar = [course_map[map_layers.index(d)][new_cell[0]][new_cell[1]] for d in NWSE]
 
-            d = (n - self.old_dir + 8) % 8
+                n = course_map[map_layers.index("direction")][cell[0]][cell[1]]
 
-            # determine the current lidar values
-            lidar = self.pullLidar(cell_directions(angles[d]))
+                d = (course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]] - n + 8) % 8
 
-            # ensure proper values were returned
-            if lidar is None:
+                # determine the current lidar values
+                lidar = self.pullLidar(cell_directions(angles[d]))
 
-                return
+                # ensure proper values were returned
+                if lidar is None:
 
-            print(lidar, new_cell_lidar)
-            # determine if current lidar values match map lidar values
-            if self.checkLidar(lidar, new_cell_lidar):
+                    return
 
-                # update current cell
-                return new_cell
+
+                # determine if current lidar values match map lidar values
+                if self.checkLidar(lidar, new_cell_lidar, self.tolerance):
+
+                    blacklist.append(self.cell)
+
+                    # update current cell
+                    return new_cell
 
         return False
 
@@ -373,6 +415,17 @@ class NavigateCourse(Node):
     """
     def checkSpin(self):
         
+        diff = self.t_yaw - self.c_yaw
+        diff = (diff + pi) % (2 * pi) - pi
+
+        if abs(diff) < 0.04:
+            
+            self.velocity = decode_direction_map[0]
+
+            self.setVel(self.velocity)
+
+        """
+
         # pull the NWSE current lidar values
         current_lidar = self.pullLidar(cell_directions(0))
 
@@ -380,12 +433,133 @@ class NavigateCourse(Node):
         cell_lidar = [course_map[map_layers.index(d)][self.cell[0]][self.cell[1]] for d in NWSE]
 
         # compare these values
-        if self.checkLidar(current_lidar, cell_lidar):
+        if self.checkLidar(current_lidar, cell_lidar, self.tolerance):
 
             self.velocity = decode_direction_map[0]
 
             # start driving straight
             self.setVel(self.velocity)
+
+        """
+
+    """
+     - checkCell()
+        function used to check the cell attributes
+        at given coordinates.
+    """
+    def checkCell(self, cell):
+
+        # all possible attributes
+        for attribute in attribute_priority:
+
+            # if attribute exists in current map
+            if attribute in map_layers:
+
+                print(attribute)
+
+                # if this cell has this attribute
+                if course_map[map_layers.index(attribute)][cell[0]][cell[1]]:
+                   
+                    print("found")
+
+                    self.sub = 1
+                    
+                    self.subprocess = attribute
+                    
+                    return
+
+    def lootProcess(self):
+
+        pass
+
+    def magnetProcess(self):
+        
+        magnet = [0.765999972820282, 1.1009999513626099, 0.2212499976158142, 1.3359999656677246]
+
+        self.setVel(decode_direction_map[1])
+
+        lidar = self.pullLidar(cell_directions(0)) 
+        
+        if self.checkLidar(lidar, magnet, self.tolerance):
+
+            self.setVel(decode_direction_map[4]) 
+
+            sleep(2)
+
+            self.setVel(decode_direction_map[0])
+
+            sleep(2)
+
+            self.setVel(decode_direction_map[3])
+
+        else:
+
+            return
+    
+        exit(1)
+
+        self.sub = 0
+
+    def rfidProcess(self):
+
+        pass
+
+    def qrProcess(self):
+     
+        # open camera
+        cam = cv2.VideoCapture(0)
+        
+        # 1280 x 720
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+        cv2.waitKey(1000)
+
+        # take picture
+        ret, pic = cam.read()
+
+        if ret:
+
+            # determine destination path
+            dst = pic_dst + "qr.jpg"
+
+            # save picture at destination
+            cv2.imwrite(dst, pic)
+            
+        # close camera
+        cam.release()
+
+        # read picture
+        qr_pic = cv2.imread(dst)
+
+        # initialize QR detector
+        qr_detector = cv2.QRCodeDetector()
+        
+        # decode QR
+        qr_data, bbox, _ = qr_detector.detectAndDecode(qr_pic)
+
+        # place holder print, this is where the qr data is passed through serial
+        print(qr_data)
+
+    def safeProcess(self):
+
+        pass
+
+    def indianaProcess(self):
+
+        pass
+
+    def cageProcess(self):
+
+        pass
+
+    def sleepProcess(self):
+
+        print("--------------------------------------")
+
+        sleep(1.5)
+
+        self.sub = 0
 
     """
      - primaryProcess()
@@ -394,30 +568,49 @@ class NavigateCourse(Node):
         robot.
     """
     def primaryProcess(self):
-   
-        print(self.cell)
+        
+        # check if subprocess is in progress
+        if self.sub:
 
-        # check if bot is spinning
-        if self.velocity[1]:
-            
-            # check if bot should still be spinning
-            self.checkSpin()
+            print("calling... " + self.subprocess)
+
+            # jump to currect subprocess
+            self.subProcess[attribute_priority.index(self.subprocess)]()
 
             return
 
         # determine if the attributes have been checked
         if not self.attribute_check_complete:
 
-            checkCell(self.cell)
+            print("doing cell check...")
+            
+            self.checkCell(self.cell)
              
             # toggle attribute check flag
             self.attribute_check_complete = 1
+
+            return
+
+        # check if bot is spinning
+        if self.velocity[1]:
+
+            # set wheel velocity
+            self.setVel(self.velocity)
+
+            print(self.c_yaw)
+
+            # check if bot should still be spinning
+            self.checkSpin()
+
+            return
 
         # compare current NWSE lidar values with neighbour lidar values
         new_cell = self.checkNN(self.cell, nearest_neighbour)
 
         # if new cell is found, update current cell
         if new_cell:
+
+            print(new_cell)
 
             # reset attribute flag
             self.attribute_check_complete = 0
@@ -429,12 +622,32 @@ class NavigateCourse(Node):
             self.old_dir = self.new_dir
             self.new_dir = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]] 
 
+            #c = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]]
+            c = self.old_dir
+            n = self.new_dir
+            #n = course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]]
+
+            d = (n - c + 8) % 8
+
+            self.t_yaw = self.c_yaw + odom_angles[d]
+            self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+            print(self.c_yaw, self.t_yaw)
+
             # use directions to determine new speed
             self.velocity = decode_direction_map[direction_map[int(self.new_dir)][int(self.old_dir)]]
 
-            # set wheel velocity
-            self.setVel(self.velocity)
+            #if not self.velocity[1]:
+            
+            #if self.velocity[1]:
 
+                #sleep(1.25)
+
+            if not self.velocity[1]:
+                # set wheel velocity
+                self.setVel(self.velocity)
+
+               
 """
  ========== FINAL FUNCTION DEFINITIONS ==========
 """
@@ -474,6 +687,8 @@ def cell_directions(d):
 
     n, w, s, e = (A["NORTH"] + d) % 380, (A["WEST"] + d) % 380, (A["SOUTH"] + d) % 380, (A["EAST"] + d) % 380
 
+    # ensure LIDAR index 0 is not used
+    # it is broken
     if n == 0:
         n = n + 1
     if w == 0:
@@ -486,94 +701,12 @@ def cell_directions(d):
     return n, w, s, e
 
 """
- - checkCell()
-    function used to check the cell attributes
-    at given coordinates.
-"""
-def checkCell(cell):
-
-    # all possible attributes
-    for attribute in attribute_priority:
-
-        # if attribute exists in current map
-        if attribute in map_layers:
-
-            # if this cell has this attribute
-            if course_map[map_layers.index(attribute)][cell[0]][cell[1]]:
-
-                # call corresponding subprocess
-                subProcess[attribute_priority.index(attribute)]()
-
-#subProcess = [lootProcess, magnetProcess, rfidProcess, qrProcess, safeProcess, indianaProcess, cageProcess]
-
-def lootProcess():
-
-    pass
-
-def magnetProcess():
-
-    pass
-
-def rfidProcess():
-
-    pass
-
-def qrProcess():
- 
-    # open camera
-    cam = cv2.VideoCapture(0)
-    
-    # 1280 x 720
-    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-    cv2.waitKey(1000)
-
-    # take picture
-    ret, pic = cam.read()
-
-    if ret:
-
-        # determine destination path
-        dst = pic_dst + "qr.jpg"
-
-        # save picture at destination
-        cv2.imwrite(dst, pic)
-        
-    # close camera
-    cam.release()
-
-    # read picture
-    qr_pic = cv2.imread(dst)
-
-    # initialize QR detector
-    qr_detector = cv2.QRCodeDetector()
-    
-    # decode QR
-    qr_data, bbox, _ = qr_detector.detectAndDecode(qr_pic)
-
-    # place holder print, this is where the qr data is passed through serial
-    print(qr_data)
-
-def safeProcess():
-
-    pass
-
-def indianaProcess():
-
-    pass
-
-def cageProcess():
-
-    pass
-
-"""
  ========== FINAL GLOBAL VARIABLES ==========
 """
 
-spin_velocity = 0.5
+spin_velocity = 0.2
 forward_velocity = -0.05
-start_cell = [8, 9]
+start_cell = [9, 8]
 
 """
  read map from sub-directory.
@@ -604,6 +737,13 @@ angles = {
     5: 237,
     6: 285,
     7: 332
+}
+
+odom_angles = {
+    0: 0,
+    2: (pi / 2),
+    4: pi,
+    6: (-pi / 2)
 }
 
 """
@@ -641,7 +781,9 @@ direction_map = read_directions()
 decode_direction_map = {
     0: [forward_velocity, 0.0],
     1: [0.0, -spin_velocity],
-    2: [0.0, spin_velocity]
+    2: [0.0, spin_velocity],
+    3: [0.0, 0.0],
+    4: [-forward_velocity, 0.0]
 }
 
 # decode_direction_map[direction_map[self.old_dir][self.new_dir]]
@@ -662,7 +804,9 @@ D = {
  list of possible file names that form the map,
  logged in their respective priority.
 """
-attribute_priority = [ "loot", "magnet", "rfid", "qr", "safe", "indiana", "cage"]
+attribute_priority = [ "loot", "magnet", "rfid", "qr", "safe", "indiana", "cage", "sleep"]
+
+blacklist = []
 
 """
  ========== MAIN ==========
