@@ -184,6 +184,9 @@ class NavigateCourse(Node):
         self.y = 0
         self_x = 0
 
+        self.mag = 0
+        self.rfid = 0
+
         # Subscribe to odometry
         self.sub_odom = self.create_subscription(
             Odometry, #Matches the import at the top (nav_msgs.msg import Odometry)
@@ -218,7 +221,7 @@ class NavigateCourse(Node):
         """Timer callback for 10Hz control loop"""
         self.test()
 
-        return
+        #return
         
         if not self.has_init:
 
@@ -372,6 +375,14 @@ class NavigateCourse(Node):
             
             # find the neighbour in each direction
             new_cell = list(map(lambda i, j: i + j, cell, direction))
+             
+            if new_cell[0] < 0 or new_cell[0] > 10:
+
+                continue
+
+            if new_cell[1] < 0 or new_cell[1] > 10:
+
+                continue
 
             try:
                 
@@ -398,6 +409,12 @@ class NavigateCourse(Node):
                 # determine if current lidar values match map lidar values
                 if self.checkLidar(lidar, new_cell_lidar, self.tolerance):
 
+                    if abs(self.cell[0] - new_cell[0]) > 1 or abs(self.cell[1] - new_cell[1]) > 1:
+
+                        if self.cell[0] == 3 and self.cell[1] == 7:
+
+                            continue
+
                     blacklist.append(self.cell)
 
                     # update current cell
@@ -418,7 +435,7 @@ class NavigateCourse(Node):
         diff = self.t_yaw - self.c_yaw
         diff = (diff + pi) % (2 * pi) - pi
 
-        if abs(diff) < 0.04:
+        if abs(diff) < 0.045:
             
             self.velocity = decode_direction_map[0]
 
@@ -474,35 +491,223 @@ class NavigateCourse(Node):
 
     def magnetProcess(self):
         
-        magnet = [0.765999972820282, 1.1009999513626099, 0.2212499976158142, 1.3359999656677246]
+        print(self.mag, self.velocity)
 
-        self.setVel(decode_direction_map[1])
+        if self.mag == 0: # align step
 
-        lidar = self.pullLidar(cell_directions(0)) 
-        
-        if self.checkLidar(lidar, magnet, self.tolerance):
+            sleep(1)
 
-            self.setVel(decode_direction_map[4]) 
+            self.mag = 1
 
-            sleep(2)
+        if self.mag == 1: # turn right step
+ 
+            self.t_yaw = self.c_yaw - (pi / 2)
+            
+            self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
 
-            self.setVel(decode_direction_map[0])
+            self.mag = 2
 
-            sleep(2)
+            self.velocity = decode_direction_map[1]
 
-            self.setVel(decode_direction_map[3])
+            self.setVel(self.velocity)
 
-        else:
+        elif self.mag == 2: # reverse step
 
-            return
-    
-        exit(1)
+            self.checkSpin()
 
-        self.sub = 0
+            if self.velocity[0]:
+
+                self.mag = 3
+
+                self.velocity = decode_direction_map[4]
+
+                self.setVel(self.velocity)
+
+        elif self.mag == 3: # forward step
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 0.17:
+
+                sleep(0.25)
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.mag = 4
+
+        elif self.mag == 4: # turn left step
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] > 0.22:
+
+                self.mag = 5
+
+                self.velocity = decode_direction_map[2]
+
+                self.setVel(self.velocity)
+
+                self.t_yaw = self.c_yaw + (pi / 2)
+            
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.mag == 5:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.sub = 0
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
 
     def rfidProcess(self):
 
-        pass
+        if self.rfid == 0:
+
+            self.rfid = 1
+
+            sleep(2)
+
+        elif self.rfid == 1:
+
+            self.rfid = 2
+
+            self.velocity = decode_direction_map[2]
+            
+            self.setVel(self.velocity)
+
+            self.t_yaw = self.c_yaw + (pi / 2)
+            
+            self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.rfid == 2:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.rfid = 3
+
+                self.velocity = decode_direction_map[4]
+
+                self.setVel(self.velocity)
+
+        elif self.rfid == 3:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 0.17:
+                
+                sleep(0.25)
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.rfid = 4
+
+        elif self.rfid == 4:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] > 0.17:
+
+                sleep(0.25)
+
+                self.rfid = 5
+
+                self.velocity = decode_direction_map[1]
+                
+                self.setVel(self.velocity)
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.rfid == 5:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.rfid = 6
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+        elif self.rfid == 6:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.20:
+
+                self.velocity = decode_direction_map[2]
+
+                self.setVel(self.velocity)
+
+                self.rfid = 7
+
+                self.t_yaw = self.c_yaw + (pi / 2)
+            
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.rfid == 7:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.rfid = 8
+
+                self.velocity = decode_direction_map[4]
+
+                self.setVel(self.velocity)
+
+                sleep(2)
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+        elif self.rfid == 8:
+
+            self.setVel(decode_direction_map[0])
+
+            self.cell = [0, 2]
+
+            # update the new and old directions
+
+            self.old_dir = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]] 
+
+            self.new_dir = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]] 
+
+            self.sub = 0
 
     def qrProcess(self):
      
@@ -556,8 +761,27 @@ class NavigateCourse(Node):
     def sleepProcess(self):
 
         print("--------------------------------------")
+        # query the lidar values for the new cell
+        #cell_lidar = [course_map[map_layers.index(d)][self.cell[0]][self.cell[1]] for d in NWSE]
 
-        sleep(1.5)
+        #lidar = self.pullLidar(cell_directions(0))
+        
+        #print(lidar[2], cell_lidar[2])
+
+        #if lidar[2] is None:
+
+        #    return
+
+        #if cell_lidar[2] + 0.015 > lidar[2] > cell_lidar[2] - 0.015:
+
+        #    self.sub = 0
+        
+        # determine if current lidar values match map lidar values
+        #if self.checkLidar(lidar, cell_lidar, self.tolerance):
+
+
+
+        sleep(2.5)
 
         self.sub = 0
 
@@ -597,7 +821,7 @@ class NavigateCourse(Node):
             # set wheel velocity
             self.setVel(self.velocity)
 
-            print(self.c_yaw)
+            #print(self.c_yaw)
 
             # check if bot should still be spinning
             self.checkSpin()
@@ -628,14 +852,20 @@ class NavigateCourse(Node):
             #n = course_map[map_layers.index("direction")][new_cell[0]][new_cell[1]]
 
             d = (n - c + 8) % 8
-
+ 
             self.t_yaw = self.c_yaw + odom_angles[d]
+            
             self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
 
             print(self.c_yaw, self.t_yaw)
-
+ 
             # use directions to determine new speed
             self.velocity = decode_direction_map[direction_map[int(self.new_dir)][int(self.old_dir)]]
+
+            if course_map[map_layers.index("neg")][self.cell[0]][self.cell[1]]:
+
+                self.velocity[0] = self.velocity[0] * -1
+                self.velocity[1] = self.velocity[1] * -1
 
             #if not self.velocity[1]:
             
@@ -704,9 +934,9 @@ def cell_directions(d):
  ========== FINAL GLOBAL VARIABLES ==========
 """
 
-spin_velocity = 0.2
+spin_velocity = 0.17
 forward_velocity = -0.05
-start_cell = [9, 8]
+start_cell = [9, 7]
 
 """
  read map from sub-directory.
@@ -766,7 +996,9 @@ NWSE = [ "north", "west", "south", "east" ]
 """
  direction tables to check surrounding cells.
 """
-nearest_neighbour = [ [0, -1], [-1, 0], [0, 1], [1, 0] ]
+#nearest_neighbour = [ [0, -1], [-1, 0], [0, 1], [1, 0] ]
+nearest_neighbour = [ [0, -1], [-1, 0], [0, 1], [1, 0], [-1, -1], [1, -1], [1, 1], [-1, 1], [0, -2], [-2, 0], [0, 2], [2, 0] ]
+
 next_nearest_neighbour = [ [-1, -1], [1, -1], [1, 1], [-1, 1] ]
 
 """
