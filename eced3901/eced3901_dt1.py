@@ -18,6 +18,7 @@ import numpy as np
 import os
 import sys
 import cv2
+import serial
 
 """
  ========== DEMO CLASS DEFINITIONS ==========
@@ -186,6 +187,14 @@ class NavigateCourse(Node):
 
         self.mag = 0
         self.rfid = 0
+        self.safe = 0
+        self.qr = 0
+        self.i = 0
+        self.c = 0
+
+        self.kondo = 0
+
+        self.start = 0
 
         # Subscribe to odometry
         self.sub_odom = self.create_subscription(
@@ -219,10 +228,20 @@ class NavigateCourse(Node):
 
     def timer_callback(self):
         """Timer callback for 10Hz control loop"""
-        self.test()
+              
+        if not self.start:
+
+            self.startProcess()
+
+            return
+    
+        #self.safeProcess()
+        #self.test()
+        #return
+        #self.kondoBitch()
 
         #return
-        
+
         if not self.has_init:
 
             self.init()
@@ -276,10 +295,151 @@ class NavigateCourse(Node):
 
         self.pub_vel.publish(vel)
 
+    def startProcess(self):
+
+        lidar = self.pullLidar(cell_directions(0))
+
+        if lidar is None:
+
+            return
+
+        if lidar[0] is None:
+
+            return
+
+        if lidar[0] > 0.5:
+
+            self.start = 1
 
     def test(self):
-
+        
         print(self.pullLidar(cell_directions(0)))
+
+        ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)  # Windows
+        ser.write("EXTEND".encode())
+        sleep(2)
+        response = ser.readline().decode('utf-8').strip()
+        while response != "DONE":
+        
+            response = ser.readline().decode('utf-8').strip()
+            print(f"{response}")
+
+        ser.write("RETRACT".encode())
+        sleep(2)
+        response = ser.readline().decode('utf-8').strip()
+        while response != "DONE":
+        
+            response = ser.readline().decode('utf-8').strip()
+            print(f"{response}")
+
+
+        ser.close() 
+
+    def kondoBitch(self):
+
+        if self.kondo == 0:
+
+            self.velocity = decode_direction_map[0]
+
+            self.setVel(self.velocity)
+
+            self.kondo = 1
+
+        elif self.kondo == 1:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar is None:
+
+                return
+
+            if lidar[2] > 0.65:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.t_yaw = self.c_yaw - (pi / 8)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+                self.kondo = 2
+
+        elif self.kondo == 2:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[2]
+
+                self.setVel(self.velocity)
+
+                self.kondo = 3
+
+                self.t_yaw = self.c_yaw + (pi / 8)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.kondo == 3:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.kondo = 4
+
+        elif self.kondo == 4:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar is None:
+
+                return
+
+            if lidar[2] > 0.80:
+
+                self.velocity = decode_direction_map[2]
+
+                self.setVel(self.velocity)
+
+                self.kondo = 5
+
+                self.t_yaw = self.c_yaw + (pi / 8)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+ 
+        elif self.kondo == 5:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.kondo = 6
+
+                self.t_yaw = self.c_yaw - (pi / 8)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+                
+        elif self.kondo == 6:
+
+            return
 
     def init(self):
 
@@ -441,24 +601,6 @@ class NavigateCourse(Node):
 
             self.setVel(self.velocity)
 
-        """
-
-        # pull the NWSE current lidar values
-        current_lidar = self.pullLidar(cell_directions(0))
-
-        # read map to find cell lidar values
-        cell_lidar = [course_map[map_layers.index(d)][self.cell[0]][self.cell[1]] for d in NWSE]
-
-        # compare these values
-        if self.checkLidar(current_lidar, cell_lidar, self.tolerance):
-
-            self.velocity = decode_direction_map[0]
-
-            # start driving straight
-            self.setVel(self.velocity)
-
-        """
-
     """
      - checkCell()
         function used to check the cell attributes
@@ -493,13 +635,13 @@ class NavigateCourse(Node):
         
         print(self.mag, self.velocity)
 
-        if self.mag == 0: # align step
+        if self.mag == 0: # align 
 
             sleep(1)
 
             self.mag = 1
 
-        if self.mag == 1: # turn right step
+        if self.mag == 1: # begin right turn
  
             self.t_yaw = self.c_yaw - (pi / 2)
             
@@ -511,7 +653,7 @@ class NavigateCourse(Node):
 
             self.setVel(self.velocity)
 
-        elif self.mag == 2: # reverse step
+        elif self.mag == 2: # begin reverse once turn is finished
 
             self.checkSpin()
 
@@ -523,7 +665,7 @@ class NavigateCourse(Node):
 
                 self.setVel(self.velocity)
 
-        elif self.mag == 3: # forward step
+        elif self.mag == 3: # reverse until magnet is placed
 
             lidar = self.pullLidar(cell_directions(0))
 
@@ -533,7 +675,7 @@ class NavigateCourse(Node):
 
             if lidar[2] < 0.17:
 
-                sleep(0.25)
+                sleep(1)
 
                 self.velocity = decode_direction_map[0]
 
@@ -541,10 +683,10 @@ class NavigateCourse(Node):
 
                 self.mag = 4
 
-        elif self.mag == 4: # turn left step
+        elif self.mag == 4: # forward until re-aligned on grid, begin left turn
 
             lidar = self.pullLidar(cell_directions(0))
-
+            
             if lidar[2] is None:
 
                 return
@@ -561,7 +703,7 @@ class NavigateCourse(Node):
             
                 self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
 
-        elif self.mag == 5:
+        elif self.mag == 5: # resume when turn is finished
 
             self.checkSpin()
 
@@ -575,13 +717,15 @@ class NavigateCourse(Node):
 
     def rfidProcess(self):
 
-        if self.rfid == 0:
+        print(self.rfid)
+
+        if self.rfid == 0: # align
 
             self.rfid = 1
 
             sleep(2)
 
-        elif self.rfid == 1:
+        elif self.rfid == 1: # begin left turn
 
             self.rfid = 2
 
@@ -593,7 +737,7 @@ class NavigateCourse(Node):
             
             self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
 
-        elif self.rfid == 2:
+        elif self.rfid == 2: # reverse step
 
             self.checkSpin()
 
@@ -605,7 +749,7 @@ class NavigateCourse(Node):
 
                 self.setVel(self.velocity)
 
-        elif self.rfid == 3:
+        elif self.rfid == 3: # reverse into wall when turn is finished
 
             lidar = self.pullLidar(cell_directions(0))
 
@@ -615,15 +759,45 @@ class NavigateCourse(Node):
 
             if lidar[2] < 0.17:
                 
-                sleep(0.25)
+                self.velocity = [0.02, 0.0]
 
-                self.velocity = decode_direction_map[0]
+                self.setVel(self.velocity)
+
+                sleep(1)
+
+                self.velocity = [0.0, 0.0]
+                
+                self.t_yaw = self.c_yaw                
+
+                self.setVel(self.velocity)
+
+                sleep(1)
+
+                self.velocity = [-0.01, 0.0]#decode_direction_map[0]
 
                 self.setVel(self.velocity)
 
                 self.rfid = 4
 
+                sleep(0.05)
+
+                self.velocity = yawVel(self.t_yaw, self.c_yaw)
+
+                self.setVel(self.velocity)
+
         elif self.rfid == 4:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+                
+                self.rfid = 5
+
+        elif self.rfid == 5: # turn right once off wall
 
             lidar = self.pullLidar(cell_directions(0))
 
@@ -635,7 +809,7 @@ class NavigateCourse(Node):
 
                 sleep(0.25)
 
-                self.rfid = 5
+                self.rfid = 6
 
                 self.velocity = decode_direction_map[1]
                 
@@ -645,19 +819,19 @@ class NavigateCourse(Node):
                 
                 self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
 
-        elif self.rfid == 5:
+        elif self.rfid == 6: # forward once turn is complete
 
             self.checkSpin()
 
             if self.velocity[0]:
 
-                self.rfid = 6
+                self.rfid = 7
 
                 self.velocity = decode_direction_map[0]
 
                 self.setVel(self.velocity)
 
-        elif self.rfid == 6:
+        elif self.rfid == 7: # turn left when safe is approaching
 
             lidar = self.pullLidar(cell_directions(0))
 
@@ -665,40 +839,38 @@ class NavigateCourse(Node):
 
                 return
 
-            if lidar[0] < 0.20:
+            if lidar[0] < 0.37:
 
                 self.velocity = decode_direction_map[2]
 
                 self.setVel(self.velocity)
 
-                self.rfid = 7
+                self.rfid = 8
 
                 self.t_yaw = self.c_yaw + (pi / 2)
             
                 self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
 
-        elif self.rfid == 7:
+        elif self.rfid == 8:
 
             self.checkSpin()
 
             if self.velocity[0]:
 
-                self.rfid = 8
-
-                self.velocity = decode_direction_map[4]
-
-                self.setVel(self.velocity)
-
-                sleep(2)
-
                 self.velocity = decode_direction_map[0]
 
                 self.setVel(self.velocity)
 
-        elif self.rfid == 8:
+                self.rfid = 9
 
-            self.setVel(decode_direction_map[0])
+        elif self.rfid == 9: # resume at cell [0, 2]
 
+            self.velocity = decode_direction_map[0]
+
+            self.setVel(self.velocity)
+
+            #self.setVel(decode_direction_map[0])
+            
             self.cell = [0, 2]
 
             # update the new and old directions
@@ -706,11 +878,15 @@ class NavigateCourse(Node):
             self.old_dir = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]] 
 
             self.new_dir = course_map[map_layers.index("direction")][self.cell[0]][self.cell[1]] 
+            
+            self.sub = 1
 
-            self.sub = 0
+            self.subprocess = "cage"
 
     def qrProcess(self):
-     
+    
+        return
+
         # open camera
         cam = cv2.VideoCapture(0)
         
@@ -726,8 +902,8 @@ class NavigateCourse(Node):
         if ret:
 
             # determine destination path
-            dst = pic_dst + "qr.jpg"
-
+            #dst = pic_dst + "qr.jpg"
+            dst = "home/student/ros2_ws/src/eced3901/eced3901/qr.jpg"
             # save picture at destination
             cv2.imwrite(dst, pic)
             
@@ -746,40 +922,589 @@ class NavigateCourse(Node):
         # place holder print, this is where the qr data is passed through serial
         print(qr_data)
 
+        if qr_data:
+
+            return qr_data
+
+        else:
+
+            return False
+
     def safeProcess(self):
 
-        pass
+        if self.safe == 0:
+
+            self.safe = 3
+
+            return
+
+            self.velocity = decode_direction_map[0]
+
+            self.setVel(self.velocity)
+
+            self.safe = 2
+
+        elif self.safe == 1:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] > 0.83: # --------------------------------------------- place holder south value
+
+                self.safe = 2
+
+                self.velocity = decode_direction_map[1]
+                
+                self.setVel(self.velocity)
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.safe == 2:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.safe = 3
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                sleep(4)
+
+                self.velocity = [-0.01, 0.0]
+
+                self.setVel(self.velocity)
+
+                """
+
+                uncomment this to stop the burnout
+                """
+                #self.velocity = decode_direction_map[3]
+
+                #self.setVel(self.velocity)
+
+
+        elif self.safe == 3:
+
+            #self.qr = self.qrProcess()
+
+            self.qr = "QR: 5-4-3"
+            if self.qr:
+            
+                # Open serial port - adjust COM port as needed
+                ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)  # Windows
+                # ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)  # Linux
+                # ser = serial.Serial('/dev/cu.usbmodem14101', 115200, timeout=1)  # macOs              
+                try:
+                    # Allow time for connection to establish
+                    sleep(1)
+                    
+                    # Send data to Pico
+                    #data_to_send = "5-4-3"
+                    self.qr = "QR: 5-4-3"
+                    ser.write(self.qr.encode())
+                    response = ser.readline().decode('utf-8').strip()
+                    while response != "DONE":
+                    
+                        # Optional: Read response
+                        response = ser.readline().decode('utf-8').strip()
+                        print(f"{response}")
+                    #if response == 'ALARM" ------------------------------------------------------
+
+                finally:
+
+                    ser.close()
+                    
+                    #self.safe = 4
+            
+        elif self.safe == 4:
+
+            self.velocity = decode_direction_map[4]
+
+            self.setVel(self.velocity)
+
+            self.safe = 5
+
+        elif self.safe == 5:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] > 0.22:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.safe = 6
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+        
+        elif self.safe == 6:
+            
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.safe = 7
+
+        elif self.safe == 7:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.277:
+
+                self.velocity = decode_direction_map[2]
+
+                self.setVel(self.velocity)
+
+                self.safe = 8
+
+                self.t_yaw = self.c_yaw + (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.safe == 8:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.safe = 9
+
+        elif self.safe == 9:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.22:
+
+                self.velocity = decode_direction_map[4]
+
+                self.setVel(self.velocity)
+
+                self.safe = 10
+
+        elif self.safe == 10:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 0.17:
+
+                sleep(2)
+
+                exit(0)
 
     def indianaProcess(self):
 
-        pass
+        if self.i == 0:
+
+            self.velocity = decode_direction_map[0]
+
+            self.setVel(self.velocity)
+
+            self.i = 1
+
+        elif self.i == 1:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] > 0.757: # ==========================================================place holder
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.i = 2
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+ 
+
+        elif self.i == 2:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = [-0.01, 0.0]#decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.i = 3
+
+        elif self.i == 3:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] > 0.54: # =================================================================== place holder
+
+                self.velocity = decode_direction_map[3]
+
+                self.setVel(self.velocity)
+
+                self.i = 4
+
+        elif self.i == 4:
+
+
+            ser = serial.Serial('/dev/ttyACM0', 115200, timeout=1)  # Windows
+            ser.write("EXTEND".encode())
+            sleep(2)
+            response = ser.readline().decode('utf-8').strip()
+            while response != "DONE":
+            
+                response = ser.readline().decode('utf-8').strip()
+                print(f"{response}")
+
+            ser.write("RETRACT".encode())
+            sleep(2)
+            response = ser.readline().decode('utf-8').strip()
+            while response != "DONE":
+            
+                response = ser.readline().decode('utf-8').strip()
+                print(f"{response}")
+
+
+            ser.close() 
+
+            sleep(1)
+            # this is where i write the servo
+
+            self.i = 5
+
+        elif self.i == 5:
+
+            self.velocity = decode_direction_map[4]
+
+            self.setVel(self.velocity)
+
+            self.i = 6
+
+        elif self.i == 6:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 0.32:
+
+                self.velocity = decode_direction_map[1]
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+ 
+                self.i = 7
+
+        elif self.i == 7:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.i = 8
+
+        elif self.i == 8:
+
+            lidar = pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.67:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.i = 9
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+ 
+        elif self.i == 9:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0] 
+
+                self.setVel(self.velocity)
+
+                self.i = 10
+
+        elif self.i == 10:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 1.25:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.i = 11
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+ 
+
+        elif self.i == 11:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.i = 12
+
+        elif self.i == 12:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.25:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                exit(0)
+
 
     def cageProcess(self):
 
-        pass
+        if self.c == 0:
+
+            self.c = 1
+
+            self.velocity = decode_direction_map[0]
+
+            self.setVel(self.velocity)
+
+        elif self.c == 1:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.422:
+
+                self.velocity = decode_direction_map[1]
+                                
+                self.setVel(self.velocity)
+
+                self.c = 2
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+ 
+        elif self.c == 2:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.c = 3
+
+        elif self.c == 3:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.25:
+
+                self.velocity = decode_direction_map[4]
+
+                self.setVel(self.velocity)
+
+                self.c = 4
+
+        elif self.c == 4:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 0.32:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.c = 5
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.c == 5:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.c = 6
+
+        elif self.c == 6:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.67:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.c = 7
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+        elif self.c == 7:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.c = 8
+
+        elif self.c == 8:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[2] is None:
+
+                return
+
+            if lidar[2] < 1.25:
+
+                self.velocity = decode_direction_map[1]
+
+                self.setVel(self.velocity)
+
+                self.c = 9
+
+                self.t_yaw = self.c_yaw - (pi / 2)
+                
+                self.t_yaw = (self.t_yaw + pi) % (2 * pi) - pi
+
+
+        elif self.c == 9:
+
+            self.checkSpin()
+
+            if self.velocity[0]:
+
+                self.velocity = decode_direction_map[0]
+
+                self.setVel(self.velocity)
+
+                self.c = 10
+
+        elif self.c == 10:
+
+            lidar = self.pullLidar(cell_directions(0))
+
+            if lidar[0] is None:
+
+                return
+
+            if lidar[0] < 0.25:
+
+                self.velocity = decode_direction_map[3]
+
+                self.setVel(self.velocity)
+
+                exit(0)
 
     def sleepProcess(self):
-
-        print("--------------------------------------")
-        # query the lidar values for the new cell
-        #cell_lidar = [course_map[map_layers.index(d)][self.cell[0]][self.cell[1]] for d in NWSE]
-
-        #lidar = self.pullLidar(cell_directions(0))
-        
-        #print(lidar[2], cell_lidar[2])
-
-        #if lidar[2] is None:
-
-        #    return
-
-        #if cell_lidar[2] + 0.015 > lidar[2] > cell_lidar[2] - 0.015:
-
-        #    self.sub = 0
-        
-        # determine if current lidar values match map lidar values
-        #if self.checkLidar(lidar, cell_lidar, self.tolerance):
-
-
 
         sleep(2.5)
 
@@ -930,6 +1655,15 @@ def cell_directions(d):
 
     return n, w, s, e
 
+def yawVel(t, c):
+
+    if t > c:
+
+        return [0.0, 0.1]
+
+    else:
+
+        return [0.0, -0.1]
 """
  ========== FINAL GLOBAL VARIABLES ==========
 """
@@ -1015,7 +1749,7 @@ decode_direction_map = {
     1: [0.0, -spin_velocity],
     2: [0.0, spin_velocity],
     3: [0.0, 0.0],
-    4: [-forward_velocity, 0.0]
+    4: [(0.5 * -forward_velocity), 0.0]
 }
 
 # decode_direction_map[direction_map[self.old_dir][self.new_dir]]
@@ -1036,7 +1770,7 @@ D = {
  list of possible file names that form the map,
  logged in their respective priority.
 """
-attribute_priority = [ "loot", "magnet", "rfid", "qr", "safe", "indiana", "cage", "sleep"]
+attribute_priority = [ "loot", "magnet", "rfid", "qr", "safe", "indianna", "cage", "sleep"]
 
 blacklist = []
 
